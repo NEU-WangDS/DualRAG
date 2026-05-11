@@ -21,10 +21,13 @@ def load_corpus(cfg: DictConfig):
     else:
         os.makedirs(cfg.workspace, exist_ok=True)
         log.info("loading corpus raw")
-        base_path = os.path.join(
-            os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
-            "2wikimultihopqa"
-        )
+        # base_path = os.path.join(
+        #     os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
+        #     "2wikimultihopqa"
+        #)
+        # 将原来的 base_path 定义修改为：
+        base_path = "/root/.cache/huggingface/hub/datasets--RUC-NLPIR--FlashRAG_datasets/snapshots/bcafb8dd07d453be3cbeeeb3f78be1841bddf92c/2wikimultihopqa"
+        
         if not os.path.exists(base_path):
             raise Exception("not exist 2wikimultihopqa")
         raw_filepaths = [

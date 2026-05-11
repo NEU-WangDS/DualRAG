@@ -7,7 +7,7 @@ from sentence_transformers import SentenceTransformer
 import torch
 from fastapi import FastAPI
 import asyncio
-
+from fastapi.encoders import jsonable_encoder
 
 dotenv.load_dotenv("../..")
 
@@ -31,12 +31,13 @@ class BgeEmbedder:
                 else await asyncio.to_thread(self.model.encode, texts, *args, **kwargs)
             prompt_tokens = sum([len(sentence.split()) for sentence in texts])
             total_tokens = prompt_tokens
-            return CreateEmbeddingResponse(
+            response =CreateEmbeddingResponse(
                 data=[Embedding(embedding=embedding, index=i, object="embedding") for i, embedding in enumerate(embeddings)],
                 model=self.model.__class__.__name__,
                 object="list",
                 usage={"prompt_tokens": prompt_tokens, "total_tokens": total_tokens}
             )
+            return jsonable_encoder(response)
 
     def get_dim(self):
         return self.model.module.get_sentence_embedding_dimension() if isinstance(self.model, torch.nn.DataParallel) \

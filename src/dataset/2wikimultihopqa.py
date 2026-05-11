@@ -4,10 +4,11 @@ from src.dataset.flashragQA import get_flashrag_qa
 
 
 def get_2wikimultihopqa():
-    dataset_path = os.path.join(
-        os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
-        "2wikimultihopqa", "dev.jsonl"
-    )
+    # dataset_path = os.path.join(
+    #     os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
+    #     "2wikimultihopqa", "dev.jsonl"
+    # )
+    dataset_path = "/root/.cache/huggingface/hub/datasets--RUC-NLPIR--FlashRAG_datasets/snapshots/bcafb8dd07d453be3cbeeeb3f78be1841bddf92c/2wikimultihopqa/dev.jsonl"
     data = get_flashrag_qa(dataset_path)
     dataset = Dataset(name="2wikimultihopqa", data=data)
     reanswer = """### 背景说明

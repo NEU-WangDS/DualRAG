@@ -1,4 +1,6 @@
-export HF_OFFLINE=1
+#export HF_OFFLINE=1
+export HF_ENDPOINT="https://hf-mirror.com"                 # 启用 Hugging Face 国内镜像源
+export HF_HOME="/root/autodl-tmp/huggingface_cache"
 
 set_variable_with_default() {
     local var_name=$1
