@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: rag  # corpus rag
+  - task: corpus  # corpus rag
   - override hydra/job_logging: colorlog
   - override hydra/hydra_logging: colorlog
 
@@ -9,8 +9,9 @@ main: ${task.name}
 dataset: 2wikimultihopqa   # popqa nq eli5 hotpotqa 2wikimultihopqa musique bamboogle strategyqa multihopqa
 corpus: ${dataset}   # wikipedia flashrag hotpotqa 2wikimultihopqa musique
 
-workspace: tmp
+workspace: /root/autodl-tmp/dualrag_workspace
 path:
+  data_dir: /root/autodl-tmp/DualRAG/data/${dataset}
   corpus_pkl: ${workspace}/${corpus}.pkl
   embedding: ${workspace}/${corpus}.memmap
   index: ${workspace}/${corpus}.index
