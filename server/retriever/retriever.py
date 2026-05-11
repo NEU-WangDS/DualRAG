@@ -81,8 +81,8 @@ class DenseRetriever:
         docs = [self.corpus[idx] for idx in idxs]
         return docs, scores.tolist(), idxs.tolist()
 
-corpus_li = ["hotpotqa", "2wikimultihopqa", "musique"]
-
+#corpus_li = ["hotpotqa", "2wikimultihopqa", "musique"]
+corpus_li = ["2wikimultihopqa"]
 retrievers = {
     corpus: DenseRetriever(embedder, f"../../tmp/{corpus}.index", f"../../tmp/{corpus}.pkl", topk=10)
     for corpus in corpus_li

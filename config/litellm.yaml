@@ -2,20 +2,20 @@ model_list:
   # Qwen/Qwen2.5-7B-Instruct
   - model_name: Qwen/Qwen2.5-7B-Instruct
     litellm_params:
-      model: Qwen/Qwen2.5-7B-Instruct
+      model: openai/Qwen/Qwen2.5-7B-Instruct
       api_base: http://localhost:8003/v1
       api_key: EMPTY
 
   # Qwen/Qwen2.5-72B-Instruct
   - model_name: Qwen/Qwen2.5-72B-Instruct
     litellm_params:
-      model: Qwen/Qwen2.5-72B-Instruct
+      model: openai/Qwen/Qwen2.5-72B-Instruct
       api_base: http://localhost:8003/v1
       api_key: EMPTY
 
   # Qwen/Qwen3-14B
   - model_name: Qwen/Qwen3-14B
     litellm_params:
-      model: Qwen/Qwen3-14B
+      model: openai/Qwen/Qwen3-14B
       api_base: http://localhost:8010/v1
       api_key: EMPTY
