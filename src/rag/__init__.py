@@ -6,3 +6,4 @@ from src.rag.metarag import MetaRAG
 from src.rag.genground import GenGround
 from src.rag.flare import FLARE
 from src.rag.duralrag import DualRAG
+from .graph_dualrag import GraphDualRAG

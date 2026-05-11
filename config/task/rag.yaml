@@ -1,11 +1,12 @@
 defaults:
-  - method: dualrag # direct native ircot metarag genground flare dualrag oracle
+  - method: graph_dualrag # direct native ircot metarag genground flare dualrag oracle
   - _self_
 name: rag
 suffix: -${task.method.name}
 
-exp_size: 1000      # 0 时全部数据集
+#exp_size: 1000      # 0 时全部数据集
 #batch_size: 20
+exp_size: 100
 batch_size: 2
 
 retrieve:

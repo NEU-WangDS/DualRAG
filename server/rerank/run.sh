@@ -29,4 +29,4 @@ set_variable_with_default() {
 
 set_variable_with_default "CUDA_VISIBLE_DEVICES" "CUDA_VISIBLE_DEVICES" "0" "1" "2" "3"
 
-uvicorn reranker:app --host localhost --port 8002 --reload
+uvicorn reranker:app --host localhost --port 8004 --reload

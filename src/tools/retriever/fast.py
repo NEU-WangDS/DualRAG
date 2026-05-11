@@ -2,11 +2,11 @@ import os
 import requests
 import aiohttp
 import time
-from tenacity import retry, stop_never, wait_random_exponential
+#from tenacity import retry, stop_never, wait_random_exponential
 from cr_utils import CostManagers
+from tenacity import retry, stop_after_attempt, wait_random_exponential
 
-
-@retry(stop=stop_never, wait=wait_random_exponential(multiplier=1, min=1, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=1, min=1, max=10))
 def retrieve(source: str, query: str, topk: int = 10):
     data = {
         "source": source,
@@ -23,7 +23,7 @@ def retrieve(source: str, query: str, topk: int = 10):
     return docs, scores, idxs
 
 
-@retry(stop=stop_never, wait=wait_random_exponential(multiplier=1, min=1, max=10))
+@retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=1, min=1, max=10))
 async def aretrieve(source: str, query: str, topk: int = 10):
     async with aiohttp.ClientSession() as session:
         data = {
