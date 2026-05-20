@@ -5,6 +5,8 @@ import requests
 import aiohttp
 from tenacity import retry, stop_never, wait_random_exponential
 
+import time
+from cr_utils import CostManagers
 
 class FastApiEmbedder:
     @staticmethod
@@ -52,3 +54,19 @@ class FastApiEmbedder:
     def get_max_seq_length():
         response = requests.get(f"{os.getenv('fastapi_embed')}/get_max_seq_length/")
         return response.json()
+
+
+@retry(stop=stop_never, wait=wait_random_exponential(multiplier=1, min=1, max=10))
+async def aencode(texts: list[str]) -> np.ndarray:
+    """
+    异步获取文本的 Embedding 向量矩阵。
+    封装了 FastApiEmbedder，并加入了 CostManagers 时间开销追踪，
+    与 aner 和 aretrieve 保持生态一致。
+    """
+    start = time.time()
+    # 默认使用较大的 batch_size 加速并发，可根据显存自行调整
+    embs = await FastApiEmbedder.acreate_embedding(texts, batch_size=16) 
+    rsp_time = time.time() - start
+    # 记录开销日志
+    CostManagers().update_cost(0, 0, 0, rsp_time, "tool_embedder")
+    return embs

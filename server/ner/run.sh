@@ -1,3 +1,8 @@
+# 1. 启用 Hugging Face 国内镜像源加速下载
+#export HF_ENDPOINT="https://hf-mirror.com"                 
+# 2. 将 Hugging Face 模型缓存指定到数据盘
+export HF_HOME="/root/autodl-tmp/huggingface_cache"
+
 set_variable_with_default() {
     local var_name=$1
     shift
@@ -29,4 +34,4 @@ set_variable_with_default() {
 
 set_variable_with_default "CUDA_VISIBLE_DEVICES" "CUDA_VISIBLE_DEVICES" "0" "1" "2" "3"
 
-uvicorn ner:app --host localhost --port 8003 --reload
+uvicorn ner:app --host localhost --port 8005 --reload

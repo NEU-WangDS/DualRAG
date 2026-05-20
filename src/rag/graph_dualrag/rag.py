@@ -1,296 +1,246 @@
-from copy import deepcopy
-from omegaconf import DictConfig
-from tqdm.asyncio import tqdm
 import json
 import logging
-from cr_utils import Logger
-
-from tenacity import retry, stop_never, wait_random_exponential
-from src.dataset import Item
-from src.tools import LLMAgent, aretrieve, arerank
-from src.rag.base import QA
-from src.rag.duralrag.doc import Doc, Docs
-from src.rag.duralrag.prompt import *
-from src.startup import RAGBuilder
-
-import networkx as nx
-import re
+import asyncio
+from omegaconf import DictConfig
+from tqdm.asyncio import tqdm
 import numpy as np
+import torch
+
+from cr_utils import Logger
+from src.dataset import Item
+from src.rag.base import QA
+from src.startup import RAGBuilder
+from src.tools.agent.llm import LLMAgent
+from src.tools.retriever.fast import aretrieve
+from src.tools.ner.fast import aner
+from src.tools.embedder.fast import aencode
+# 复用原仓库中优秀的多智能体迭代引擎
+from src.rag.duralrag.rag import Infer, KManager, Knowledge
+
+# 导入本文核心图谱算法模块
+from .heg import HeterogeneousEvidenceGraph
+from .graphsage import RWRWalker, TopologyFeatureAggregator
 
 log = logging.getLogger(__name__)
 
+prompt_system1 = """请基于以下背景信息，简明直接地回答问题。
 
-class Knowledge:
-    def __init__(self, entity: str) -> None:
-        self.entity: str = entity
-        self.contents: list[str] = []
-        self.supports: Docs = Docs()
+背景信息:
+{docs}
 
-    def __str__(self) -> str:
-        return f"#### {self.entity}\n\n" + "\n\n".join(self.contents)
+问题: {question}
+答案:"""
 
-    @classmethod
-    def dict2str(cls, knowledge: dict[str, "Knowledge"]) -> str:
-        return "\n\n".join([str(k) for k in knowledge.values()])
+prompt_system2 = """你是一个具备高级逻辑推演能力的学术问答助手。
+请基于以下经过异构证据图（HEG）拓扑寻路以及 GraphSAGE 重校准后的背景信息，进行长程跨文档多跳逻辑推理，给出最终的严密答案。
+提示：背景语料已根据其拓扑增益得分进行了 U 型重排，首尾段落包含最重要的关联线索。请仔细分析各节点间的实体路径。
 
-    @classmethod
-    def dict2json(cls, knowledge: dict[str, "Knowledge"]) -> dict:
-        return deepcopy({k: v.contents for k, v in knowledge.items()})
+大模型先验推理链路 (Thought):
+{thought}
 
+重校准后的背景信息库:
+{docs}
 
-class Infer(LLMAgent):
-    def __init__(self, cfg: DictConfig) -> None:
-        if cfg.task.method.abl.infer:
-            super().__init__("infer", prompt_infer_abl, cfg.task.method.infer)
-        else:
-            super().__init__("infer", prompt_infer, cfg.task.method.infer, response_format_infer)
-        self.cfg = cfg
-
-    @retry(stop=stop_never, wait=wait_random_exponential(multiplier=1, min=1, max=10))
-    async def ainfer(self, id: str, placeholder: dict):
-        if self.cfg.task.method.abl.infer:
-            rsp = await self.arun(id, placeholder, openai_params={"stop": [".", "\n"], "temperature": 0.3}) + "."
-            need_retrieve = not "So the answer is" in rsp
-            return rsp, need_retrieve, rsp
-        else:
-            rsp = await self.arun(id, placeholder)
-            rsp = json.loads(rsp)
-            thought, need_retrieve = rsp["thought"], rsp["need_retrieve"]
-            return thought, need_retrieve, rsp
-
-
-class KManager:
-    def __init__(self, cfg: DictConfig) -> None:
-        self.cfg = cfg
-        self.kb: dict[str, Knowledge] = {}  # entity -> Knowledge
-        self.thought: list[str] = []
-        self.agents = {
-            "EI": (
-                LLMAgent("EI", prompt_need, cfg.task.method.EI, response_format_need)
-                if not cfg.task.method.abl.EI2 else
-                LLMAgent("EI2", prompt_need_abl2, cfg.task.method.EI, response_format_need_abl2)
-            ),
-            "KS": LLMAgent("KS", prompt_learn, cfg.task.method.KS),
-        }
-
-    @retry(stop=stop_never, wait=wait_random_exponential(multiplier=1, min=1, max=10))
-    async def aei(self, data: Item):
-        if self.cfg.task.method.abl.EI:
-            entity2key = {"none": [self.thought[-1]]}
-            return entity2key
-        elif self.cfg.task.method.abl.EI2:
-            rsp = await self.agents["EI"].arun(data.id, placeholder={
-                "question": data.question,
-                "thought": "\n".join([f"{i + 1}. {t}" for i, t in enumerate(self.thought)]),
-            })
-            query = json.loads(rsp)["query"]
-            return {data.question: [query]}
-        else:
-            rsp = await self.agents["EI"].arun(data.id, placeholder={
-                "knowledge": Knowledge.dict2str(self.kb),
-                "question": data.question,
-                "thought": "\n".join([f"{i + 1}. {t}" for i, t in enumerate(self.thought)]),
-                "known_entity": [entity for entity in self.kb.keys() if entity != "else"],
-            })
-            entity2key = json.loads(rsp)["entities"]
-            entity2key = {entity["entity"]: entity["keywords"] for entity in entity2key}
-            return entity2key
-
-    async def aks(self, data: Item, entity: str, keywords: list[str], docs: Docs):
-        if self.cfg.task.method.abl.KS:
-            if "Related docs" not in self.kb:
-                self.kb["Related docs"] = Knowledge("Related docs")
-            new_docs = [doc for doc in docs if str(doc) not in self.kb["Related docs"].contents]
-            self.kb["Related docs"].contents.extend([str(doc) for doc in new_docs])
-            trace = {
-                "new_docs": {doc.id: str(doc) for doc in new_docs},
-                "summary": "abl_learn",
-            }
-            return trace
-        if self.cfg.task.method.abl.EI:
-            # 由于 EI 的 abl, 会没有 entity 和 keywords, 所以这里摘要时，需要根据 doc.title 判断 entity
-            entity2docs: dict[str, Docs] = {}
-            for doc in docs:
-                if doc.title not in entity2docs:
-                    entity2docs[doc.title] = Docs()
-                entity2docs[doc.title].add([doc])
-            trace = {}
-            for entity, docs in entity2docs.items():
-                if entity not in self.kb:
-                    self.kb[entity] = Knowledge(entity)
-                new_docs = self.kb[entity].supports.add([doc for doc in docs])
-                rsp = await self.agents["KS"].arun(data.id, placeholder={
-                    "question": data.question,
-                    "thought": "\n\n".join([f"#### step {i}\n\n{t}" for i, t in enumerate(self.thought)]),
-                    "entity": entity,
-                    "query": ", ".join(keywords),
-                    "docs": "\n\n".join([str(doc) for doc in new_docs]),
-                })
-                if "None" not in rsp and "none" not in rsp:
-                    self.kb[entity].contents.append(rsp)
-                elif len(self.kb[entity].contents) == 0:
-                    self.kb.pop(entity)
-                trace[entity] = {
-                    "new_docs": {idx: str(doc) for idx, doc in zip(new_docs.ids(), new_docs)},
-                    "summary": rsp,
-                }
-            return trace
-        else:
-            if self.cfg.task.method.abl.KS:
-                entity = "Related docs"
-            if entity not in self.kb:
-                self.kb[entity] = Knowledge(entity)
-            new_docs = self.kb[entity].supports.add([doc for doc in docs])
-            rsp = await self.agents["KS"].arun(data.id, placeholder={
-                "question": data.question,
-                "thought": "\n\n".join([f"#### step {i}\n\n{t}" for i, t in enumerate(self.thought)]),
-                "entity": entity,
-                "query": ", ".join(keywords),
-                "docs": "\n\n".join([str(doc) for doc in new_docs]),
-            })
-            if  "None" not in rsp and "none" not in rsp:
-                self.kb[entity].contents.append(rsp)
-            elif len(self.kb[entity].contents) == 0:
-                self.kb.pop(entity)
-            trace = {
-                "new_docs": {idx: str(doc) for idx, doc in zip(new_docs.ids(), new_docs)},
-                "summary": rsp,
-            }
-            return trace
+用户多跳提问: {question}
+请输出详细的推理链并给出最终答案:"""
 
 
 @RAGBuilder.register_module("graph_dualrag")
 class GraphDualRAG(QA):
     def __init__(self, cfg: DictConfig, logger: Logger):
         super().__init__(cfg, logger)
+        self.cfg = cfg
+        method_cfg = self.cfg.task.method
+        
+        # 加载论文 4.2 节中的启发式路由参数
+        self.tau_route = method_cfg.get('route_threshold', 0.6)
+        self.alpha = method_cfg.get('alpha', 0.5)
+        self.beta = method_cfg.get('beta', 0.5)
+        self.gamma = method_cfg.get('gamma', 0.6)
+        self.topk = method_cfg.get('retrieve_topk', 5)
+        
+        # 初始化双过程生成 Agent
+        self.agent_sys1 = LLMAgent("system1", prompt_system1, cfg.task.base_llm)
+        self.agent_sys2 = LLMAgent("system2", prompt_system2, cfg.task.base_llm)
+        
+        # 实例化多智能体大脑 (复用原本的 Infer 引擎)
         self.infer = Infer(cfg)
-        self.answer = LLMAgent("answer", prompt_answer, cfg.task.base_llm)
-
+        
+        # 初始化图计算核心组件
+        self.rwr_walker = RWRWalker(
+            restart_prob=method_cfg.get('rwr_restart_prob', 0.3),
+            max_iters=method_cfg.get('rwr_max_iters', 100)
+        )
+        self.topology_aggregator = TopologyFeatureAggregator(
+            hidden_dim=method_cfg.get('embedding_dim', 384), 
+            device='cuda' if torch.cuda.is_available() else 'cpu'
+        )
     async def aquery(self, data: Item):
         log_dir = f"log/{data.id}/llm"
         self.logger.mkdir(log_dir)
-        trace_tmp = {}
+        trace_log = {}
+
+        # 阶段 1: 异步启发式路由计算 Φ(Q)
+        score_phi, init_docs, init_scores, init_idxs, query_entities = await self._aheuristic_routing(data.question)
+        trace_log["router"] = {"phi_score": score_phi, "query_entities": query_entities}
+
+        # 阶段 2: 路由分流
+        if score_phi < self.tau_route:
+            log.info(f"[{data.id}] 触发系统 1 (快思考), Φ(Q)={score_phi:.2f}")
+            trace_log["decision"] = "System 1"
+            rsp = await self._asystem1_fast_response(data.id, data.question, init_docs)
+            return rsp, trace_log
+        else:
+            log.info(f"[{data.id}] 触发系统 2 (慢思考), 启动图谱拓扑迭代, Φ(Q)={score_phi:.2f}")
+            trace_log["decision"] = "System 2"
+            
+            # 将初始召回数据转为 Chunk 格式
+            initial_chunks = [{"chunk_id": idx, "text": doc} for doc, idx in zip(init_docs, init_idxs)]
+            
+            rsp, sys2_trace = await self._asystem2_slow_reasoning(data, initial_chunks, query_entities)
+            trace_log.update(sys2_trace)
+            return rsp, trace_log
+
+    async def _aheuristic_routing(self, query: str):
+        """实现 4.2 节：混合复杂度打分函数 Φ(Q)"""
+        ner_task = aner(query)
+        retrieve_task = aretrieve(self.cfg.corpus, query, self.topk)
+        extracted_entities, retrieve_res = await asyncio.gather(ner_task, retrieve_task)
+        
+        q_len = max(len(query), 1)
+        d_ent = min(1.0, len(extracted_entities) / (q_len * 0.1))
+        
+        docs, scores, idxs = retrieve_res
+        c_ret = float(scores[0]) if scores else 0.0
+            
+        phi = self.alpha * d_ent + self.beta * (1.0 - c_ret)
+        return phi, docs, scores, idxs, extracted_entities
+
+    async def _asystem1_fast_response(self, task_id: str, query: str, docs: list[str]) -> str:
+        context_str = "\n\n".join([f"[{i}] {doc}" for i, doc in enumerate(docs)])
+        return await self.agent_sys1.arun(task_id, placeholder={"docs": context_str, "question": query})
+
+    async def _asystem2_slow_reasoning(self, data: Item, initial_chunks: list[dict], query_entities: list[str]):
+        """
+        核心系统 2：【迭代式实体探寻】 + 【非破坏性图谱特征重排】
+        """
+        sys2_trace = {}
         kmanager = KManager(self.cfg)
-        with tqdm(range(self.cfg.task.method.max_iter), leave=False, desc=f"{data.id}") as tbar:
+        global_chunks_dict = {c['chunk_id']: c for c in initial_chunks} # 用于存储探索到的所有去重文档
+        
+        # =========================================================
+        # 步骤 A: 启发式多跳实体游走与文档收集 (摒弃旧版的 KS 摘要破坏)
+        # =========================================================
+        with tqdm(range(self.cfg.task.method.max_iter), leave=False, desc=f"图谱探索 {data.id}") as tbar:
             for step in tbar:
-                log_step = {"knowledge": Knowledge.dict2json(kmanager.kb)}
-                tbar.set_postfix(status="infer")
-                thought_new, need_retrive, thought_rsp = await self.infer.ainfer(data.id, placeholder={
-                    "knowledge": Knowledge.dict2str(kmanager.kb),
+                # 1. 模拟大脑思考: 还需要继续多跳吗？
+                thought_new, need_retrieve, _ = await self.infer.ainfer(data.id, placeholder={
+                    "knowledge": Knowledge.dict2str(kmanager.kb), # 旧版遗留接口兼容
                     "question": data.question,
                     "thought": "\n".join(kmanager.thought),
                 })
                 kmanager.thought.append(thought_new)
-                log_step["thought"] = thought_rsp
-                if not need_retrive:
-                    trace_tmp[step] = log_step
-                    break
-                tbar.set_postfix(status="EI")
+                
+                if not need_retrieve:
+                    break # 知识已经足够，停止探索
+                
+                # 2. 意图提取: 下一跳搜什么？
+                tbar.set_postfix(status="EI 实体提取")
                 entity2key = await kmanager.aei(data)
-                tbar.set_postfix(status="retrieve")
-                log_step["retrive"] = {}
-                log_step["KS"] = {}
+                
+                # 3. 执行检索并将原文档收集入图谱缓冲池，而不进行摘要破坏！
+                tbar.set_postfix(status="Retrieve 扩充图谱")
                 for entity, keywords in entity2key.items():
-                    if self.cfg.task.method.abl.EI:
-                        entity = " ".join(keywords)
-                    log_step["retrive"][entity] = {"r": {}}
-                    entity_docs = Docs()
                     for keyword in keywords:
-                        docs, scores, idxs = await aretrieve(self.cfg.corpus, keyword, self.cfg.task.method.retrieve.topk)
-                        entity_docs.add([Doc(idx, doc) for idx, doc in zip(idxs, docs)])
-                        log_step["retrive"][entity]["r"][keyword] = {
-                            "docs": {idx: doc for idx, doc in zip(idxs, docs)},
-                            "scores": {idx: score for idx, score in zip(idxs, scores)},
-                        }
-                    if not self.cfg.task.method.retrieve.rerank_abl:
-                        docs, idxs = [str(doc) for doc in entity_docs], entity_docs.ids()
-                        # ==== 核心创新点：基于知识图谱的非破坏性多跳拓扑增益 (Graph-DualRAG V2) ====
-                        # 1. 扩大召回池，为图算法保留充足的 Hop-2 (二跳) 候选文档
-                        k_target = self.cfg.task.method.retrieve.rerank_topk
-                        docs, scores, idxs = await arerank(entity, idxs, docs, k=k_target * 3) # 召回3倍用于图过滤
+                        docs, scores, idxs = await aretrieve(self.cfg.corpus, keyword, self.topk)
+                        for idx, doc in zip(idxs, docs):
+                            if idx not in global_chunks_dict:
+                                global_chunks_dict[idx] = {"chunk_id": idx, "text": doc}
 
-                        try:
-                            G = nx.Graph()
-                            
-                            # [模块 1] 动态实体识别 (NER) 与文档块索引 (对应中期报告)
-                            # 利用维基百科多跳数据集的特性，提取连续的首字母大写词组作为专有名词/实体
-                            def extract_named_entities(text):
-                                # 匹配连续的首字母大写单词，例如 "James Cameron", "Titanic", "New York"
-                                entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text)
-                                # 过滤掉句首常见的非实体词
-                                stop_entities = {"The", "A", "An", "This", "That", "It", "He", "She"}
-                                return set([e for e in entities if e not in stop_entities and len(e) > 2])
-                            
-                            # [模块 2] 构建 "文档-实体" 异构知识图谱
-                            for i, doc_text in enumerate(docs):
-                                doc_id = f"doc_{i}"
-                                G.add_node(doc_id, type="document", orig_score=scores[i])
-                                
-                                entities = extract_named_entities(doc_text)
-                                for ent in entities:
-                                    G.add_node(ent, type="entity")
-                                    # 边权重设为1，代表三元组中的 (Doc, contains, Entity) 关系
-                                    G.add_edge(doc_id, ent, weight=1.0)
-                                    
-                            # [模块 3] 寻找 Hop-1 种子节点 (Seed Documents)
-                            # 假设 BGE 给出最高分的 Top-2 文档是绝对相关的一跳文档 (Hop-1)
-                            # 我们要利用图结构，找到与它们相连的二跳文档 (Hop-2)
-                            scores_arr = np.array(scores)
-                            # 使用 Sigmoid 将 BGE 的 Logits 映射到 (0, 1) 区间，方便做数学加成
-                            norm_scores = 1 / (1 + np.exp(-scores_arr)) 
-                            
-                            seed_indices = np.argsort(scores_arr)[-2:] # 取分数最高的2个作为种子
-                            seed_doc_ids = [f"doc_{i}" for i in seed_indices]
-                            
-                            # [模块 4] 拓扑增益计算 (Topology-Aware Non-Destructive Boosting)
-                            enhanced_scores = []
-                            for i, base_score in enumerate(norm_scores):
-                                doc_id = f"doc_{i}"
-                                graph_boost = 0.0
-                                
-                                # 如果该文档不是种子文档，我们检查它是否与种子文档通过实体产生了 Hop-2 连接
-                                if doc_id not in seed_doc_ids and doc_id in G:
-                                    shared_entities_count = 0
-                                    for seed_id in seed_doc_ids:
-                                        if seed_id in G:
-                                            # 获取当前文档和种子文档的共同邻居（即共享的命名实体）
-                                            shared_ents = list(nx.common_neighbors(G, doc_id, seed_id))
-                                            shared_entities_count += len(shared_ents)
-                                    
-                                    # 每共享一个核心实体，给予 0.05 的分数增益 (对应中期报告的子图游走概率)
-                                    # 使用 tanh 函数平滑增益上限，防止分数爆炸
-                                    graph_boost = np.tanh(shared_entities_count * 0.05) * 0.3 
-                                    
-                                # 非破坏性融合：原分数 + 拓扑增益 (绝对不会倒扣分！)
-                                final_score = base_score + graph_boost
-                                enhanced_scores.append(final_score)
-                                
-                            # [模块 5] 重新排序并截断
-                            ranked_results = sorted(zip(idxs, docs, enhanced_scores), key=lambda x: x[2], reverse=True)
-                            idxs = [res[0] for res in ranked_results[:k_target]]
-                            docs = [res[1] for res in ranked_results[:k_target]]
-                            scores = [res[2] for res in ranked_results[:k_target]]
+        # 获取探索到的全量非结构化文档池
+        all_chunks = list(global_chunks_dict.values())
+        sys2_trace["total_explored_chunks"] = len(all_chunks)
 
-                            #log.info("Graph-DualRAG: Topology-Aware Entity Boosting applied successfully!")
+        # =========================================================
+        # 步骤 B: 内存动态图谱实例化 (第三章 HEG 物理构建)
+        # =========================================================
+        chunk_texts = [c['text'] for c in all_chunks]
+        
+        # 并发执行 NER 探针
+        ner_tasks = [aner(text) for text in chunk_texts]
+        chunk_entities_batch = await asyncio.gather(*ner_tasks)
+        for i, chunk in enumerate(all_chunks):
+            chunk['entities'] = [{'entity': e} for e in chunk_entities_batch[i]]
+            
+        # 获取 Embedding 
+        chunk_embeddings = await aencode(chunk_texts)
 
-                        except Exception as e:
-                            log.warning(f"Graph topology fallback triggered due to error: {e}")
-                            idxs, docs, scores = idxs[:k_target], docs[:k_target], scores[:k_target]
-                        # ==========================================================
-                    docs_to_learn = Docs([Doc(idx, doc) for idx, doc in zip(idxs, docs)])
-                    if len(docs_to_learn) == 0:
-                        continue
-                    trace_learn = await kmanager.aks(data, entity, keywords, Docs([Doc(idx, doc) for idx, doc in zip(idxs, docs)]))
-                    log_step["KS"][entity] = trace_learn
-                trace_tmp[step] = log_step
-        rsp = await self.answer.arun(data.id, placeholder={
-            "knowledge": Knowledge.dict2str(kmanager.kb),
-            "question": data.question,
-            "thought": "\n\n".join([f"#### step {i}\n\n{t}" for i, t in enumerate(kmanager.thought)]),
+        heg_builder = HeterogeneousEvidenceGraph()
+        graph = heg_builder.build_graph(all_chunks, chunk_embeddings, sim_threshold=self.cfg.task.method.get('sim_threshold', 0.75))
+
+        # =========================================================
+        # 步骤 C: RWR 游走与 GraphSAGE 特征重校准 (第四章核心)
+        # =========================================================
+        # 提取 LLM 思考过程中的所有意图实体作为种子节点
+        expanded_query_entities = query_entities + [e for k in kmanager.kb.keys() for e in kmanager.kb[k].contents]
+        seed_nodes = heg_builder.get_seed_nodes_from_query(expanded_query_entities)
+        
+        rwr_scores = self.rwr_walker.compute_rwr(graph, seed_nodes) if seed_nodes else {}
+        topology_features = self.topology_aggregator.aggregate_features(graph, chunk_embeddings)
+        query_emb = (await aencode([data.question]))[0]
+
+        # =========================================================
+        # 步骤 D: U 型注意力重排与生成 (解决 Lost in the Middle)
+        # =========================================================
+        composite_scores = []
+        for chunk in all_chunks:
+            c_id = chunk['chunk_id']
+            p_star = rwr_scores.get(c_id, 0.0)
+            h_v = topology_features.get(c_id, None)
+            
+            sem_score = 0.0
+            if h_v is not None and np.linalg.norm(h_v) > 0:
+                sem_score = np.dot(query_emb, h_v) / (np.linalg.norm(query_emb) * np.linalg.norm(h_v))
+                
+            score_ci = self.gamma * p_star + (1.0 - self.gamma) * sem_score
+            composite_scores.append((score_ci, chunk))
+            
+        # 根据拓扑得分降序，并执行 U 型非破坏性重排
+        composite_scores.sort(key=lambda x: x[0], reverse=True)
+        ranked_chunks = [item[1] for item in composite_scores]
+
+        #保存未经 U 型重排的严格降序列表，专供评测器算 IR 指标！
+        sys2_trace["ranked_docs"] = [c['text'] for c in ranked_chunks]
+
+        reordered_chunks = self._u_shape_reorder(ranked_chunks)
+
+        sys2_trace["reordered_docs"] = [c['text'] for c in reordered_chunks]
+
+        # 组装最终提示词
+        context_blocks = []
+        # 为了防止 Token 超载，仅取重排后的前 N 个核心文档
+        for c in reordered_chunks[:self.cfg.task.method.get('final_topk', 15)]:
+            ent_str = ", ".join([e['entity'] for e in c.get('entities', [])])
+            context_blocks.append(f"<path> ID: {c['chunk_id']} | 拓扑实体: [{ent_str}] </path>\n{c['text']}")
+            
+        context_str = "\n\n=============\n\n".join(context_blocks)
+        
+        # 传入全量探索出的先验思考 (Thought) 和经过图谱打分的真实原文档进行闭环生成
+        rsp = await self.agent_sys2.arun(data.id, placeholder={
+            "thought": "\n".join(kmanager.thought),
+            "docs": context_str,
+            "question": data.question
         })
-        trace = {
-            "knowledge": Knowledge.dict2json(kmanager.kb),
-            "thought": kmanager.thought,
-            "trace": trace_tmp,
-        }
-        return rsp, trace
+        
+        sys2_trace["final_thought"] = kmanager.thought
+        return rsp, sys2_trace
+
+    def _u_shape_reorder(self, ranked_items: list) -> list:
+        if not ranked_items: return []
+        reordered = []
+        for i in range(0, len(ranked_items), 2):
+            reordered.append(ranked_items[i])
+        start_idx = len(ranked_items) - 1 - (len(ranked_items) % 2)
+        for i in range(start_idx, 0, -2):
+            reordered.append(ranked_items[i])
+        return reordered

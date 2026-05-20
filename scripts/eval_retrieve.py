@@ -10,13 +10,26 @@ from src.evaluator import  retrieval_metrics
 
 dataset = "2wikimultihopqa" # "nq", "eli5", "asqa", "hotpotqa", "2wikimultihopqa", "musique", "bamboogle", "strategyqa"
 print(f"dataset: {dataset}")
-k_values = [3, 10, 50, 200]
+
+logs = {
+    "2wikimultihopqa": {
+        "native": ["0521_004456-native"],
+        "graph_dualrag": ["0521_000302-graph_dualrag"] 
+    }
+}
+
+#k_values = [3, 10, 50, 200]
+k_values = [5, 10, 20]
+# methods = [
+#     "native",
+#     "ircot",
+#     "hrag",
+#     "hrag-mem",
+#     "lazykrag",
+# ]
 methods = [
     "native",
-    "ircot",
-    "hrag",
-    "hrag-mem",
-    "lazykrag",
+    "graph_dualrag"
 ]
 
 
@@ -35,6 +48,18 @@ def get_docs_retrieved(trace: dict, method: str) -> list[str]:
                 docs.update(set([doc for v in trace["trace"][i]["learn"].values() for doc in v["new_docs"].values()]))
     elif "lazykrag" in method:
         docs.update(set([doc for doc in trace["docs"].values()]))
+    elif "graph_dualrag" in method:
+        # 优先读取严格降序的 ranked_docs
+        doc_list = trace.get("ranked_docs", trace.get("reordered_docs", trace.get("system1_docs", [])))
+        
+        ordered_docs = []
+        seen = set()
+        for d in doc_list:
+            if d not in seen:
+                seen.add(d)
+                ordered_docs.append(d)
+        # 直接返回 ordered_docs，千万不能过 list(set())！
+        return ordered_docs
     else:
         raise NotImplementedError
     return list(docs)
@@ -82,7 +107,8 @@ def eval_method(method: str):
     scores_all = {}
     relevance_all = {}
     for cnt, log_dir in enumerate(logs[dataset][method]):
-        log_base_path = f"log/rag/{dataset}/{log_dir}/output"
+        #log_base_path = f"log/rag/{dataset}/{log_dir}/output"
+        log_base_path = f"outputs/rag/{dataset}/{log_dir}/output"
         scores, relevance = eval_method_one(log_base_path, method, cnt)
         scores_all.update(scores)
         relevance_all.update(relevance)
