@@ -6,7 +6,7 @@ defaults:
 
 main: ${task.name}
 
-dataset: 2wikimultihopqa   # popqa nq eli5 hotpotqa 2wikimultihopqa musique bamboogle strategyqa multihopqa
+dataset:  2wikimultihopqa  # popqa nq eli5 hotpotqa 2wikimultihopqa musique bamboogle strategyqa multihopqa
 corpus: ${dataset}   # wikipedia flashrag hotpotqa 2wikimultihopqa musique
 
 workspace: /root/autodl-tmp/dualrag_workspace

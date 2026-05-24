@@ -5,6 +5,7 @@ from omegaconf import DictConfig
 from tqdm.asyncio import tqdm
 import numpy as np
 import torch
+import time
 
 from cr_utils import Logger
 from src.dataset import Item
@@ -164,6 +165,8 @@ class GraphDualRAG(QA):
         # =========================================================
         # 步骤 B: 内存动态图谱实例化 (第三章 HEG 物理构建)
         # =========================================================
+
+        build_start_time = time.time()
         chunk_texts = [c['text'] for c in all_chunks]
         
         # 并发执行 NER 探针
@@ -178,6 +181,13 @@ class GraphDualRAG(QA):
         heg_builder = HeterogeneousEvidenceGraph()
         graph = heg_builder.build_graph(all_chunks, chunk_embeddings, sim_threshold=self.cfg.task.method.get('sim_threshold', 0.75))
 
+        build_latency_ms = (time.time() - build_start_time) * 1000  # 🚨 探针：计算毫秒延迟
+        # log.info(f"[{data.id}] HEG构图耗时: {build_latency_ms:.2f} ms | 候选文本块数 N={len(all_chunks)}")
+        # 🚨 获取 networkx 图对象的真实边数
+        edge_count = graph.number_of_edges() 
+        
+        # 将边数一起用标准 log 打印，确保写入 main.log
+        log.info(f"[{data.id}] HEG构图耗时: {build_latency_ms:.2f} ms | N={len(all_chunks)} | 边数:{edge_count}")
         # =========================================================
         # 步骤 C: RWR 游走与 GraphSAGE 特征重校准 (第四章核心)
         # =========================================================

@@ -8,13 +8,20 @@ from scripts.logs import logs
 from src.corpus import  hash_object
 from src.evaluator import  retrieval_metrics
 
-dataset = "2wikimultihopqa" # "nq", "eli5", "asqa", "hotpotqa", "2wikimultihopqa", "musique", "bamboogle", "strategyqa"
+dataset = "hotpotqa" # "nq", "eli5", "asqa", "hotpotqa", "2wikimultihopqa", "musique", "bamboogle", "strategyqa"
 print(f"dataset: {dataset}")
 
 logs = {
-    "2wikimultihopqa": {
-        "native": ["0521_004456-native"],
-        "graph_dualrag": ["0521_000302-graph_dualrag"] 
+    "hotpotqa": {
+        # "native": ["0521_165818-native"],
+        #"graph_dualrag": ["0521_184631-graph_dualrag"]
+        #"graph_dualrag": ["0521_184738-graph_dualrag"]
+        #"graph_dualrag": ["0521_184824-graph_dualrag"]
+        #"graph_dualrag": ["0521_184920-graph_dualrag"]
+        #"graph_dualrag": ["0521_185008-graph_dualrag"]
+        #"graph_dualrag": ["0521_185059-graph_dualrag"]
+        #"graph_dualrag": ["0521_185149-graph_dualrag"]
+        "graph_dualrag": ["0521_185241-graph_dualrag"]  
     }
 }
 
@@ -28,7 +35,7 @@ k_values = [5, 10, 20]
 #     "lazykrag",
 # ]
 methods = [
-    "native",
+    # "native",
     "graph_dualrag"
 ]
 
@@ -36,8 +43,18 @@ methods = [
 def get_docs_retrieved(trace: dict, method: str) -> list[str]:
     docs = set()
     if "native" in method:
-        rerank = trace["rerank"]
-        docs.update(set([doc for doc_id, doc in rerank["docs"].items() if rerank["scores"][doc_id] > 0]))
+        # 🚨 修改：直接读取纯 Faiss 的 retrieve 结果，不读 rerank！
+        retrieve = trace["retrieve"]
+        # 根据 Faiss 分数进行严格降序排序，保证公平
+        sorted_docs = sorted(
+            retrieve["docs"].items(), 
+            key=lambda x: retrieve["scores"][x[0]], 
+            reverse=True
+        )
+        return [doc for doc_id, doc in sorted_docs]
+    # if "native" in method:
+    #     rerank = trace["rerank"]
+    #     docs.update(set([doc for doc_id, doc in rerank["docs"].items() if rerank["scores"][doc_id] > 0]))
     elif "ircot" in method:
         for i in trace:
             rerank = trace[i]["rerank"] if "rerank" in trace[i] else trace[i]["retrieve"]["rerank"]
@@ -73,8 +90,11 @@ def eval_one(log_filepath: str, method: str):
         titles: list[str] = log_content["metadata"]["context"]["title"]
         contents: list[list[str]] = log_content["metadata"]["context"][content_key]
 
-        doc_id = [titles.index(title) for title in log_content["metadata"]["supporting_facts"]["title"]]  # 有效 doc id
-        sent_id = log_content["metadata"]["supporting_facts"]["sent_id"]                                  # 有效 sentence id
+        # doc_id = [titles.index(title) for title in log_content["metadata"]["supporting_facts"]["title"]]  # 有效 doc id
+        # sent_id = log_content["metadata"]["supporting_facts"]["sent_id"]                                  # 有效 sentence id
+
+        doc_id = [titles.index(title) for title in log_content["metadata"]["supporting_facts"]["title"] if title in titles]
+        sent_id = log_content["metadata"]["supporting_facts"]["sent_id"]
 
         support_titles = [titles[i] for i in doc_id]
         join_token = "" if dataset == "hotpotqa" else " "
@@ -97,9 +117,20 @@ def eval_one(log_filepath: str, method: str):
 
 def eval_method_one(log_base_path: str, method: str, cnt: int):
     ids = [f.replace(".json", "") for f in os.listdir(log_base_path) if f.endswith(".json")]
-    ret = {f"{cnt}_{id}": eval_one(f"{log_base_path}/{id}.json", method) for id in ids}
-    scores = {id: v[0] for id, v in ret.items()}
-    relevance = {id: v[1] for id, v in ret.items()}
+    # ret = {f"{cnt}_{id}": eval_one(f"{log_base_path}/{id}.json", method) for id in ids}
+    # scores = {id: v[0] for id, v in ret.items()}
+    # relevance = {id: v[1] for id, v in ret.items()}
+    scores = {}
+    relevance = {}
+    for id in ids:
+        s, r = eval_one(f"{log_base_path}/{id}.json", method)
+        
+        # 🚨 终极防线：如果这道题的标准答案为空，直接跳过它！
+        # 绝不把空字典交给底层的 pytrec_eval，彻底杜绝 C++ 段错误 (Segfault)
+        if len(r) > 0:
+            scores[f"{cnt}_{id}"] = s
+            relevance[f"{cnt}_{id}"] = r
+
     return scores, relevance
 
 

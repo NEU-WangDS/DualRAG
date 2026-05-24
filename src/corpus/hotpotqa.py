@@ -7,6 +7,7 @@ import tarfile
 import bz2
 import pickle as pkl
 
+from huggingface_hub import hf_hub_download
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +22,15 @@ def load_corpus(cfg: DictConfig):
     else:
         os.makedirs(cfg.workspace, exist_ok=True)
         log.info("loading corpus raw")
-        base_path = os.path.join(
-            os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
-            "retrieval-corpus", "hotpotqa", "enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2"
+        # base_path = os.path.join(
+        #     os.getenv("HF_HOME"), "hub", "datasets--cbxgss--rag", "snapshots", "64d4a872814da55c8284f5536795df03c39ddad2",
+        #     "retrieval-corpus", "hotpotqa", "enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2"
+        # )
+        # base_path ="/root/.cache/huggingface/hub/datasets--RUC-NLPIR--FlashRAG_datasets/snapshots/bcafb8dd07d453be3cbeeeb3f78be1841bddf92c/hotpotqa"
+        base_path = hf_hub_download(
+            repo_id="cbxgss/rag",
+            filename="retrieval-corpus/hotpotqa/enwiki-20171001-pages-meta-current-withlinks-abstracts.tar.bz2",
+            repo_type="dataset"
         )
         if not os.path.exists(base_path):
             raise Exception("not exist hotpotqa corpus")
