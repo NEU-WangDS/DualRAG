@@ -1,48 +1,61 @@
-# <h1 align="center"> DualRAG: A Dual-Process Approach to Integrate Reasoning and Retrieval for Multi-Hop Question Answering </h1>
-
-This is the repository for our ACL 2025 paper ["DualRAG: A Dual-Process Approach to Integrate Reasoning and Retrieval for Multi-Hop Question Answering"](https://aclanthology.org/2025.acl-long.1539/).
-
-<div style="text-align: center;">
-  <img src="assets/README/intro.png" alt="intro" width="400">
-</div>
-
-![DualRAG Main Figure](assets/README/main.png)
 
 ## <a name="quick_start"></a>:flight_departure:Quick Start
 
-1. Installation
+1. 环境配置
 
   ```bash
   uv sync --extra llm --extra retrieve
+  # 同时写有python-version与pyproject.toml
+  # 环境激活 source activate dualrag_env
   ```
 
 2. Retriever
-
-  构造检索库。
+ 
+  下载数据集，构造检索库。
 
   ```bash
   # 1. 在 `config/main.yaml` 中把 `task` 修改成 "corpus"
   # 2. 对于不同的数据集修改一下 `corpus` 参数 (或者 `dataset` 参数)
   python main.py
-  ```
 
+  # 运行main之后进入流程scr/stratup
+  #会启动scripts的download，之后进入src/dataset把不同数据集统一成 Item/Dataset，并把语料整理成可检索文档
+  ```
+3. 微服务
+ #封装成独立的接口，通过FASTAPI串联
+  #向量
   ```bash
-  cd server/embedder
+  cd DualRAG/server/embedder
   ./run.sh
 
-  cd server/retriever
+  # 检索
+  cd DualRAG/server/retriever
   ./run.sh
   ```
+  #重排
 
-1. LLM Servers
+  cd DualRAG/server/rerank
+  ./run.sh
+
+  #NER 实体识别
+  cd DualRAG/server/ner
+  ./run.sh
+
+# LLM Servers 大模型
 
   ```bash
-  cd server/vllm
+  cd DualRAG/server/vllm
+  # 缺权限时 chmod +x run_qwen.sh
   ./run_qwen.sh
   ```
 
-4. Run
+4. 跑RAG
 
+# 1. 在 `config/main.yaml` 中把 `task` 修改成 "rag"
+# 2. main.yaml中datasets可选择不同数据集 
+# 3. rag.yaml 可调rag方法与训练集大小等 method中有每个rag方法的具体参数配置
+# 4. rag方法的具体实现放在src/rag下
+# 5.流程约为：main， Hydra 读取 config 配置，Runbuilder看任务为rag，进入 RagRunner，加载数据集，实例化配置指定的 RAG 方法，并批量处理问题，最终每道题都会保存回答、标准答案、评测指标和完整 trace，总体结果写入 evaluate.csv。
   ```bash
   python main.py
   ```
@@ -53,41 +66,4 @@ This is the repository for our ACL 2025 paper ["DualRAG: A Dual-Process Approach
 
 
 
-## :email: Contact
 
-For questions about code or paper, please email `chengrong@tju.edu.cn`.
-
-For authorization and collaboration inquiries, please email `yanzheng@tju.edu.cn` or `jianye.hao@tju.edu.cn`.
-
-# Citation
-
-If you find this work useful, consider citing it:
-
-```bib
-@inproceedings{cheng-etal-2025-dualrag,
-    title = "{D}ual{RAG}: A Dual-Process Approach to Integrate Reasoning and Retrieval for Multi-Hop Question Answering",
-    author = "Cheng, Rong  and
-      Liu, Jinyi  and
-      Zheng, Yan  and
-      Ni, Fei  and
-      Du, Jiazhen  and
-      Mao, Hangyu  and
-      Zhang, Fuzheng  and
-      Wang, Bo  and
-      Hao, Jianye",
-    editor = "Che, Wanxiang  and
-      Nabende, Joyce  and
-      Shutova, Ekaterina  and
-      Pilehvar, Mohammad Taher",
-    booktitle = "Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)",
-    month = jul,
-    year = "2025",
-    address = "Vienna, Austria",
-    publisher = "Association for Computational Linguistics",
-    url = "https://aclanthology.org/2025.acl-long.1539/",
-    doi = "10.18653/v1/2025.acl-long.1539",
-    pages = "31877--31899",
-    ISBN = "979-8-89176-251-0",
-    abstract = "Multi-Hop Question Answering (MHQA) tasks permeate real-world applications, posing challenges in orchestrating multi-step reasoning across diverse knowledge domains. While existing approaches have been improved with iterative retrieval, they still struggle to identify and organize dynamic knowledge. To address this, we propose DualRAG, a synergistic dual-process framework that seamlessly integrates reasoning and retrieval. DualRAG operates through two tightly coupled processes: Reasoning-augmented Querying (RaQ) and progressive Knowledge Aggregation (pKA). They work in concert: as RaQ navigates the reasoning path and generates targeted queries, pKA ensures that newly acquired knowledge is systematically integrated to support coherent reasoning. This creates a virtuous cycle of knowledge enrichment and reasoning refinement. Through targeted fine-tuning, DualRAG preserves its sophisticated reasoning and retrieval capabilities even in smaller-scale models, demonstrating its versatility and core advantages across different scales. Extensive experiments demonstrate that this dual-process approach substantially improves answer accuracy and coherence, approaching, and in some cases surpassing, the performance achieved with oracle knowledge access. These results establish DualRAG as a robust and efficient solution for complex multi-hop reasoning tasks."
-}
-```

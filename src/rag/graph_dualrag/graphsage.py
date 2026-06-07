@@ -42,7 +42,8 @@ class RWRWalker:
         for seed in valid_seeds:
             p_0[node_idx[seed]] = 1.0 / len(valid_seeds)
             
-        # 4. 马尔可夫链幂法迭代 (Power Iteration)
+        # 4. 马尔可夫链幂法迭代 (Power Iteration) 
+        #  1 - c 的概率为继续随机游走，c为重启概率
         p_t = np.copy(p_0)
         W_T = W.T # 矩阵转置 W^T
         
@@ -82,6 +83,7 @@ class SAGELayer(nn.Module):
         h_neighbor = torch.matmul(adj, h)
         
         # 2. 特征拼接 (Concatenation): [h_v || h_N(v)]
+        # 将节点自己的特征 h 和刚刚算出来的邻居平均特征 h_neighbor 像接火车一样在最后一维拼接起来。
         h_concat = torch.cat([h, h_neighbor], dim=-1)
         
         # 3. 非线性激活: \sigma(W * h_concat)
@@ -93,6 +95,9 @@ class SAGELayer(nn.Module):
 
 class LightweightGraphSAGE(nn.Module):
     """两阶 GraphSAGE 网络模型"""
+    #第一层：文本块吸收了与它直接相连的实体的信息。
+
+    #第二层：文本块通过实体作为桥梁，吸收到了包含该实体的其他远端文本块的信息。
     def __init__(self, hidden_dim: int):
         super(LightweightGraphSAGE, self).__init__()
         # 两阶邻域采样，对应图 4-3 中的层 1 和层 2

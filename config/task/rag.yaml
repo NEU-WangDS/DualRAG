@@ -1,5 +1,5 @@
 defaults:
-  - method: dualrag # direct native ircot metarag genground flare dualrag oracle
+  - method: graph_dualrag # direct native ircot  dualrag  graph_dualrag
   - _self_
 name: rag
 suffix: -${task.method.name}
